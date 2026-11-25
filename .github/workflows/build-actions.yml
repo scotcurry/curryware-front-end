@@ -1,34 +1,47 @@
 name: frontend Build
 # Builds the image, pushes it to Docker Hub, and bumps the tag in k8s-manifests, which
 # Argo CD auto-syncs to production. So: master only. Branches and PRs get ci.yml.
-# TODO (Next.js rewrite): replace the Python steps below with the Node/Docker build.
 on:
   push:
     branches: [master]
+
+permissions:
+  contents: read
+
+# One deploy at a time, so manifest commits don't race each other.
+concurrency:
+  group: frontend-deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE: scotcurry4/curryware-front-end
+  VERSION: ${{ github.run_number }}
+  MANIFEST: curryware-fantasy/curryware-front-end-deployment.yaml
+  NEXT_TELEMETRY_DISABLED: "1"
+
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
     steps:
       - name: Get-Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      # This adds a tag to use for Slack notification
-      - name: Install Node for NPM
-        uses: actions/setup-node@v4
+      - name: Install Node
+        uses: actions/setup-node@v5
         with:
-          node-version: 18
+          node-version: 24
+          cache: npm
+
+      # Adds a tag used for the Slack notification.
       - run: npm install -g @datadog/datadog-ci
       - run: DATADOG_SITE=datadoghq.com DD_API_KEY=${{ secrets.DD_API_KEY }} datadog-ci tag --level pipeline --tags slack-channel:curryware-frontend
-      - name: Install-Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-      - run: pip install -r requirements.txt
 
-      # https://github.com/docker/build-push-action/?tab=readme-ov-file#path-context
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
+      # Same checks as ci.yml; nothing is built or deployed if they fail.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
       - name: Check imported libraries are secure and compliant
         id: datadog-software-composition-analysis
         uses: DataDog/datadog-sca-github-action@main
@@ -38,56 +51,58 @@ jobs:
           dd_env: ci
           dd_service: curryware-front-end
           dd_site: datadoghq.com
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_AUTH_TOKEN }}
+
+      # The cluster is amd64 only, and GitHub runners build amd64 natively.
       - name: Build and Push
         run: |
-          docker buildx build --push -t scotcurry4/curryware-front-end:${{ github.run_number }} \
-          --platform linux/amd64 \
-          --build-arg DD_VERSION=${{ github.run_number}} \
-          --build-arg DD_GIT_REPOSITORY_URL="github.com/scotcurry/curryware-front-end" \
-          --build-arg DD_GIT_COMMIT_SHA=${{ github.sha }} \
-          -f Dockerfile .
-#        uses: docker/build-push-action@v5
-#        with:
-#          context: .
-#          platforms: linux/amd64,linux/arm64/v8
-#          push: true
-#          # Don't forget to set the IMAGE_NAME environment variable.
-#          tags: scotcurry4/curryware-front-end:${{ github.run_number}}
-#          labels: |
-#            org.opencontainers.image.source=github.com/scotcurry/curryware-front-end
-#            org.opencontainers.image.revision=${{ github.sha }}
-#            tags.datadoghq.com/env=prod
-#            tags.datadoghq.com/version=${{ github.run_number }}
-#            tags.datadoghq.com/service=curryware-front-end
+          docker buildx build --push \
+            --platform linux/amd64 \
+            -t "${IMAGE}:${VERSION}" \
+            --build-arg DD_VERSION="${VERSION}" \
+            --build-arg DD_GIT_REPOSITORY_URL="github.com/${{ github.repository }}" \
+            --build-arg DD_GIT_COMMIT_SHA="${{ github.sha }}" \
+            -f Dockerfile .
 
-      # Check out the K8s manifest files for updating
       - name: Get manifest files
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          repository: 'scotcurry/k8s-manifests'
-          path: '${{ github.workspace }}/k8s-manifests'
+          repository: scotcurry/k8s-manifests
+          ref: main
+          path: k8s-manifests
           token: ${{ secrets.GH_ACCESS_TOKEN }}
-          ref: 'main'
-      - run: |
-          echo ${{ github.workspace }}
-          cd ${{ github.workspace }}/k8s-manifests
-          ls -la
-          # sed pattern to update manifest versions - 's/version: \"[[:digit:]]*\"/version: \"20\"/g'
-          # Site to test sed commands - https://sed.js.org/
-          echo 'Setting Version: ${{ github.run_number }}'
-          sed -i -e 's/version: \"[[:digit:]]*\"/version: \"${{ github.run_number }}\"/g' ${{ github.workspace }}/k8s-manifests/curryware-fantasy/curryware-front-end-deployment.yaml
-          echo 'Updating image version'
-          sed -i -e 's/scotcurry4\/curryware-front-end:[[:digit:]]*/scotcurry4\/curryware-front-end:${{ github.run_number }}/g' ${{ github.workspace }}/k8s-manifests/curryware-fantasy/curryware-front-end-deployment.yaml
-          cat ${{ github.workspace }}/k8s-manifests/curryware-fantasy/curryware-front-end-deployment.yaml
-          echo "Committed curryware-front-end $(date +"%Y-%m-%d %T") - Short SHA: ${{ github.sha }}" > commit_file.txt
+
+      - name: Set image tag and Datadog version in the manifest
+        working-directory: k8s-manifests
+        run: |
+          sed -E -i \
+            -e "s#scotcurry4/curryware-front-end:[[:digit:]]+#${IMAGE}:${VERSION}#g" \
+            -e "s#(tags\.datadoghq\.com/version: )\"[[:digit:]]*\"#\1\"${VERSION}\"#g" \
+            "$MANIFEST"
+          grep -nE 'image:|tags\.datadoghq\.com/version:' "$MANIFEST"
+
+      - name: Commit the manifest to k8s-manifests
+        working-directory: k8s-manifests
+        run: |
           git config user.name "scotcurry"
           git config user.email "scotcurry4@gmail.com"
-          git commit -F commit_file.txt .
-          git push
+          git add "$MANIFEST"
+          if git diff --cached --quiet; then
+            echo "Manifest already at ${VERSION}"
+            exit 0
+          fi
+          git commit -m "Committed curryware-front-end $(date -u +'%Y-%m-%d %T') - Short SHA: ${GITHUB_SHA}"
+          # Other services' CI also pushes here; rebase in case one landed first.
+          for attempt in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1

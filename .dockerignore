@@ -1,0 +1,21 @@
+# Installed and built inside the image instead.
+node_modules
+.next
+*.tsbuildinfo
+next-env.d.ts
+
+# Not needed in the image.
+.git
+.github
+.idea
+.vscode
+**/.DS_Store
+coverage
+README.md
+CLAUDE.md
+AGENTS.md
+Dockerfile
+.dockerignore
+
+# Local env files can hold credentials; .env.development is dev-only anyway.
+.env*

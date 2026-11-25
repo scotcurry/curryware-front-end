@@ -23,6 +23,17 @@ cp -r .next/static .next/standalone/.next/
 PORT=3000 JAVA_API_BASE_URL=https://ubuntu-microk8s.curryware.org/java node .next/standalone/server.js
 ```
 
+Container image (Podman machine `curryware-podman`):
+```bash
+podman build --platform linux/arm64 -t curryware-front-end:local .    # native on Apple silicon
+podman run --rm -p 3000:3000 --add-host ubuntu-microk8s.curryware.org:98.243.101.177 \
+  -e JAVA_API_BASE_URL=https://ubuntu-microk8s.curryware.org/java curryware-front-end:local
+```
+- Build locally for arm64: an emulated `--platform linux/amd64` build segfaults in QEMU at the
+  end of `next build`. CI builds amd64 natively on GitHub's runners.
+- Inside the Podman VM the hostname resolves to the node's LAN IP and the connection is
+  refused, hence `--add-host` with the public IP.
+
 ## Architecture
 - Next.js App Router + TypeScript + Tailwind CSS 4. Replaces the old Python/Flask front-end
   (still in git history on `master` before the rewrite).
