@@ -5,6 +5,8 @@
 // (http://curryware-java-api-server-service:8080); for local development it is the
 // public ingress (https://ubuntu-microk8s.curryware.org/java). See .env.development.
 
+import { errorAttributes, logger } from "@/lib/logger";
+
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /** One row of /v1/game_info/get_game_info (all_league_information). */
@@ -68,6 +70,9 @@ function baseUrl(): string {
 
 async function getJson<T>(path: string): Promise<T> {
   const url = `${baseUrl()}${path}`;
+  const started = performance.now();
+  const elapsedMs = () => Math.round(performance.now() - started);
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -75,17 +80,30 @@ async function getJson<T>(path: string): Promise<T> {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
+    logger.warn(
+      { ...errorAttributes(error), java_api: { path, duration_ms: elapsedMs() } },
+      "Java API request failed",
+    );
     throw new JavaApiError(
       `Java API request failed: ${path} (${error instanceof Error ? error.message : String(error)})`,
     );
   }
   if (!response.ok) {
+    logger.warn(
+      { java_api: { path, status: response.status, duration_ms: elapsedMs() } },
+      "Java API returned an error status",
+    );
     throw new JavaApiError(
       `Java API returned ${response.status} for ${path}`,
       response.status,
     );
   }
-  return (await response.json()) as T;
+  const body = (await response.json()) as T;
+  logger.debug(
+    { java_api: { path, status: response.status, duration_ms: elapsedMs() } },
+    "Java API request succeeded",
+  );
+  return body;
 }
 
 export function getLeagues(): Promise<League[]> {

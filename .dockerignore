@@ -19,3 +19,5 @@ Dockerfile
 
 # Local env files can hold credentials; .env.development is dev-only anyway.
 .env*
+# Needed by `next build`: the public RUM settings that get inlined into the browser bundle.
+!.env.production

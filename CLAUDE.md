@@ -57,6 +57,20 @@ podman run --rm -p 3000:3000 --add-host ubuntu-microk8s.curryware.org:98.243.101
 - Because pages stream, `notFound()` inside `<Suspense>` renders the 404 UI but the HTTP
   status is already 200.
 
+## Datadog
+- **APM:** nothing in code. Single-step instrumentation injects the Node tracer in the
+  cluster (Deployment annotation `admission.datadoghq.com/js-lib.version`). `dd-trace` and
+  `pino` are in Next.js's default `serverExternalPackages`, so the tracer can hook them.
+- **Logs:** `src/lib/logger.ts` (pino) writes one JSON object per line to stdout with
+  `message`, string `level`, `timestamp`, `service` and `error.kind/message/stack/cause`.
+  With `DD_LOGS_INJECTION=true` the tracer adds `dd.trace_id`/`dd.span_id`.
+  `src/instrumentation.ts` (`onRequestError`) logs every unhandled server error.
+- **RUM:** `src/instrumentation-client.ts`, service `curryware-front-end-js`, configured from
+  `NEXT_PUBLIC_DD_*` in `.env.production` (public app id + browser client token) and the
+  `DD_VERSION` build arg. Off in `npm run dev`. `allowedTracingUrls` covers the app's own
+  origin, linking RUM views to the server's APM traces.
+- Your Mac may have `DD_SERVICE` set globally; the logger uses it when present.
+
 ## Data notes
 - Team data exists only for the 2025 leagues (`461.l.*`); other leagues show an empty state.
 - The Java API has no standings endpoint yet (the `team_weekly_standings` table exists).
@@ -72,3 +86,9 @@ podman run --rm -p 3000:3000 --add-host ubuntu-microk8s.curryware.org:98.243.101
 Installs go through a supply-chain firewall (SCFW) that blocks packages with OSV advisories.
 Check the current version first (`npm view <pkg> version`) and pin it exactly; older majors
 are often blocked.
+
+npm bug (npm/cli#4828): `npm install <pkg>` into an existing tree can drop the platform
+packages of optional native deps from `package-lock.json` (e.g. all `@rolldown/binding-*`),
+which breaks Vitest locally and `npm ci` in CI. After adding a package, check
+`grep -c '"node_modules/@rolldown/binding-' package-lock.json` (expect 16). If they are
+gone, regenerate: `rm -rf node_modules package-lock.json && npm install`.

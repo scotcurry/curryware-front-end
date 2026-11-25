@@ -32,8 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-# Holds only the public Java API URL for `npm run dev`; secrets go in .env*.local.
+# These hold only public values (dev Java API URL; RUM app id and browser client token).
+# Secrets go in .env*.local, which stays ignored.
 !.env.development
+!.env.production
 
 # IDEs
 .idea/

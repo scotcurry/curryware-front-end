@@ -17,7 +17,10 @@ RUN npm ci --no-audit --no-fund
 # ---- build: next build -> .next/standalone (server.js + traced node_modules) ----
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
+# Inlined into the browser bundle so RUM reports the same version as the server.
+ARG DD_VERSION
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_DD_VERSION=${DD_VERSION}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

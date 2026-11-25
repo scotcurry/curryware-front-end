@@ -8,5 +8,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Keep test output readable; logger.test.ts checks the log format itself.
+    env: { LOG_LEVEL: "silent" },
   },
 });
