@@ -1,5 +1,10 @@
 name: frontend Build
-on: [push]
+# Builds the image, pushes it to Docker Hub, and bumps the tag in k8s-manifests, which
+# Argo CD auto-syncs to production. So: master only. Branches and PRs get ci.yml.
+# TODO (Next.js rewrite): replace the Python steps below with the Node/Docker build.
+on:
+  push:
+    branches: [master]
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
