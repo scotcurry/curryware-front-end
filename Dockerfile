@@ -1,24 +1,56 @@
-FROM python:3.11.8-slim-bookworm
+# syntax=docker/dockerfile:1
+#
+# Build:  podman build -t curryware-front-end:local .
+# Run:    podman run --rm -p 3000:3000 \
+#           -e JAVA_API_BASE_URL=https://ubuntu-microk8s.curryware.org/java \
+#           curryware-front-end:local
+#
+# Debian (glibc) base so Datadog single-step instrumentation can inject the Node tracer.
+ARG NODE_IMAGE=node:24.22.3-bookworm-slim
 
-EXPOSE 8000
-
+# ---- dependencies: installed for the build platform from the lockfile ----
+FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
-COPY ../requirements.txt requirements.txt
-# See Datadog Static Analysis -- https://docs.datadoghq.com/code_analysis/static_analysis_rules/docker-best-practices/pip-pin-versions/
-RUN python3 -m pip install --upgrade pip==24.3.1 && python3 -m pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+# ---- build: next build -> .next/standalone (server.js + traced node_modules) ----
+FROM ${NODE_IMAGE} AS build
+WORKDIR /app
+# Inlined into the browser bundle so RUM reports the same version as the server.
+ARG DD_VERSION
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_DD_VERSION=${DD_VERSION}
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN npm run build
 
-RUN useradd appuser && chown -R appuser /app
-USER appuser
+# ---- runtime: only the standalone server and its static assets ----
+FROM ${NODE_IMAGE} AS runner
+WORKDIR /app
 
-ENV DD_LOGS_INJECTION=true
 ARG DD_GIT_REPOSITORY_URL
 ARG DD_GIT_COMMIT_SHA
 ARG DD_VERSION
-ENV DD_GIT_REPOSITORY_URL=${DD_GIT_REPOSITORY_URL}
-ENV DD_GIT_COMMIT_SHA=${DD_GIT_COMMIT_SHA}
-ENV DD_VERSION=${DD_VERSION}
-ENV DD_ENV="prod"
-ENV DD_SERVICE="curryware-java-api-server"
 
-CMD exec ddtrace-run gunicorn -b :8000 --workers 1 --threads 8 --timeout 0 app:app
+LABEL org.opencontainers.image.source="https://${DD_GIT_REPOSITORY_URL}" \
+      org.opencontainers.image.revision="${DD_GIT_COMMIT_SHA}" \
+      org.opencontainers.image.version="${DD_VERSION}"
+
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0 \
+    DD_SERVICE=curryware-front-end \
+    DD_VERSION=${DD_VERSION} \
+    DD_GIT_REPOSITORY_URL=${DD_GIT_REPOSITORY_URL} \
+    DD_GIT_COMMIT_SHA=${DD_GIT_COMMIT_SHA}
+
+# There is no public/ folder yet; if one is added, also copy it:
+#   COPY --from=build --chown=node:node /app/public ./public
+COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /app/.next/static ./.next/static
+
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
